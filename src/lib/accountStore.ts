@@ -6,8 +6,23 @@ export type Account = {
   createdAt: string
 }
 
+export type OrderSide = "YES" | "NO"
+
+export type Fill = {
+  id: string
+  accountId: string
+  symbol: string
+  marketName: string
+  side: OrderSide
+  quantity: number
+  price: number
+  cost: number
+  createdAt: string
+}
+
 export type AccountStore = {
   accounts: Account[]
+  fills: Fill[]
   activeAccountId: string | null
 }
 
@@ -17,6 +32,7 @@ const STORAGE_KEY = "onyx-paper-accounts"
 
 const emptyStore: AccountStore = {
   accounts: [],
+  fills: [],
   activeAccountId: null,
 }
 
@@ -56,6 +72,7 @@ export function signUp(
 
   return {
     accounts: [...store.accounts, account],
+    fills: store.fills,
     activeAccountId: account.id,
   }
 }
@@ -86,4 +103,64 @@ export function logOut(store: AccountStore): AccountStore {
     ...store,
     activeAccountId: null,
   }
+}
+
+export function placePaperOrder(
+  store: AccountStore,
+  order: {
+    accountId: string
+    symbol: string
+    marketName: string
+    side: OrderSide
+    quantity: number
+    price: number
+  }
+): AccountStore {
+  if (order.quantity <= 0) {
+    throw new Error("Quantity must be greater than zero.")
+  }
+
+  if (order.price <= 0 || order.price >= 1) {
+    throw new Error("Price must be between 1 and 99 cents.")
+  }
+
+  const account = store.accounts.find(
+    (candidate) => candidate.id === order.accountId
+  )
+
+  if (!account) {
+    throw new Error("Account not found.")
+  }
+
+  const cost = order.quantity * order.price
+
+  if (cost > account.balance) {
+    throw new Error("Insufficient paper balance.")
+  }
+
+  const fill: Fill = {
+    id: crypto.randomUUID(),
+    accountId: account.id,
+    symbol: order.symbol,
+    marketName: order.marketName,
+    side: order.side,
+    quantity: order.quantity,
+    price: order.price,
+    cost,
+    createdAt: new Date().toISOString(),
+  }
+
+  return {
+    ...store,
+    accounts: store.accounts.map((candidate) =>
+      candidate.id === account.id
+        ? { ...candidate, balance: candidate.balance - cost }
+        : candidate
+    ),
+    fills: [fill, ...store.fills],
+  }
+}
+
+export function getAccountFills(store: AccountStore, accountId: string) {
+  return store.fills.filter((fill) => fill.accountId === accountId)
 }
