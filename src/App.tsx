@@ -7,15 +7,21 @@ import {
   loadAccountStore,
   logIn,
   logOut,
+  placePaperOrder,
   saveAccountStore,
   signUp,
   STARTING_BALANCE,
   type AccountStore,
+  type OrderSide,
 } from "@/lib/accountStore"
 import {
+  getMarketPrice,
   getMarkets,
+  getNoPrice,
   getSports,
+  getYesPrice,
   type OnyxMarket,
+  type OnyxPrice,
   type OnyxSport,
 } from "@/lib/onyx"
 
@@ -31,6 +37,8 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
   currency: "USD",
 })
 
+const MARKETS_PER_PAGE = 20
+
 export function App() {
   const [accountStore, setAccountStore] = useState<AccountStore>(() =>
     loadAccountStore()
@@ -41,12 +49,28 @@ export function App() {
   const [sports, setSports] = useState<OnyxSport[]>([])
   const [selectedSport, setSelectedSport] = useState("ALL")
   const [search, setSearch] = useState("")
+  const [page, setPage] = useState(1)
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+  const [selectedPrice, setSelectedPrice] = useState<OnyxPrice | null>(null)
+  const [orderSide, setOrderSide] = useState<OrderSide>("YES")
+  const [quantity, setQuantity] = useState(10)
+  const [orderMessage, setOrderMessage] = useState("")
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState("")
 
   const activeAccount = accountStore.accounts.find(
     (account) => account.id === accountStore.activeAccountId
   )
+  const selectedMarket =
+    markets.find((market) => market.symbol === selectedSymbol) ?? markets[0]
+  const selectedYesPrice = selectedMarket
+    ? getYesPrice(selectedMarket, selectedPrice ?? undefined)
+    : null
+  const selectedNoPrice = selectedMarket
+    ? getNoPrice(selectedMarket, selectedPrice ?? undefined)
+    : null
+  const orderPrice = orderSide === "YES" ? selectedYesPrice : selectedNoPrice
+  const orderCost = orderPrice == null ? null : orderPrice * quantity
 
   const filteredMarkets = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -70,6 +94,14 @@ export function App() {
       return text.includes(query)
     })
   }, [markets, search])
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredMarkets.length / MARKETS_PER_PAGE)
+  )
+  const visibleMarkets = filteredMarkets.slice(
+    (page - 1) * MARKETS_PER_PAGE,
+    page * MARKETS_PER_PAGE
+  )
 
   const loadMarketData = useCallback(async () => {
     setIsLoading(true)
@@ -81,12 +113,21 @@ export function App() {
         getMarkets({
           sport: selectedSport,
           status: "open",
-          limit: 100,
+          limit: 500,
         }),
       ])
 
       setSports(nextSports)
       setMarkets(nextMarkets)
+      setSelectedSymbol((currentSymbol) =>
+        currentSymbol &&
+        nextMarkets.some((market) => market.symbol === currentSymbol)
+          ? currentSymbol
+          : (
+              nextMarkets.find((market) => market.yes_price != null) ??
+              nextMarkets[0]
+            )?.symbol
+      )
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -105,6 +146,40 @@ export function App() {
   useEffect(() => {
     saveAccountStore(accountStore)
   }, [accountStore])
+
+  useEffect(() => {
+    setPage(1)
+  }, [search, selectedSport])
+
+  useEffect(() => {
+    setPage((currentPage) => Math.min(currentPage, pageCount))
+  }, [pageCount])
+
+  useEffect(() => {
+    setSelectedPrice(null)
+
+    if (!selectedMarket) {
+      return
+    }
+
+    let isCurrent = true
+
+    getMarketPrice(selectedMarket.symbol)
+      .then((price) => {
+        if (isCurrent) {
+          setSelectedPrice(price)
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setSelectedPrice(null)
+        }
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [selectedMarket])
 
   function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -126,6 +201,36 @@ export function App() {
         caughtError instanceof Error
           ? caughtError.message
           : "Could not authenticate."
+      )
+    }
+  }
+
+  function handleOrderSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setOrderMessage("")
+
+    if (!selectedMarket || !activeAccount || orderPrice == null) {
+      setOrderMessage("Select a market with a tradable price first.")
+      return
+    }
+
+    try {
+      const nextStore = placePaperOrder(accountStore, {
+        accountId: activeAccount.id,
+        symbol: selectedMarket.symbol,
+        marketName: selectedMarket.name ?? selectedMarket.symbol,
+        side: orderSide,
+        quantity,
+        price: orderPrice,
+      })
+
+      setAccountStore(nextStore)
+      setOrderMessage(
+        `Filled ${quantity} ${orderSide} at ${formatPrice(orderPrice)}.`
+      )
+    } catch (caughtError) {
+      setOrderMessage(
+        caughtError instanceof Error ? caughtError.message : "Order rejected."
       )
     }
   }
@@ -271,40 +376,169 @@ export function App() {
           </div>
         ) : null}
 
-        <section className="overflow-hidden rounded-lg border bg-card">
-          <div className="grid grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-xs font-medium text-muted-foreground uppercase md:grid-cols-[minmax(0,1fr)_120px_120px_160px]">
-            <span>Market</span>
-            <span>Status</span>
-            <span>Yes price</span>
-            <span className="hidden md:block">Expires</span>
-          </div>
-
-          {isLoading ? (
-            <div className="p-6 text-sm text-muted-foreground">
-              Loading markets...
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <section className="overflow-hidden rounded-lg border bg-card">
+            <div className="grid grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-xs font-medium text-muted-foreground uppercase md:grid-cols-[minmax(0,1fr)_120px_120px_160px]">
+              <span>Market</span>
+              <span>Status</span>
+              <span>Yes price</span>
+              <span className="hidden md:block">Expires</span>
             </div>
-          ) : null}
 
-          {!isLoading && filteredMarkets.length === 0 ? (
-            <div className="p-6 text-sm text-muted-foreground">
-              No markets found.
-            </div>
-          ) : null}
+            {isLoading ? (
+              <div className="p-6 text-sm text-muted-foreground">
+                Loading markets...
+              </div>
+            ) : null}
 
-          {!isLoading
-            ? filteredMarkets.map((market) => (
-                <MarketRow key={market.symbol} market={market} />
-              ))
-            : null}
-        </section>
+            {!isLoading && filteredMarkets.length === 0 ? (
+              <div className="p-6 text-sm text-muted-foreground">
+                No markets found.
+              </div>
+            ) : null}
+
+            {!isLoading
+              ? visibleMarkets.map((market) => (
+                  <MarketRow
+                    key={market.symbol}
+                    market={market}
+                    isSelected={selectedMarket?.symbol === market.symbol}
+                    onSelect={() => {
+                      setSelectedSymbol(market.symbol)
+                      setOrderMessage("")
+                    }}
+                  />
+                ))
+              : null}
+
+            {!isLoading && filteredMarkets.length > 0 ? (
+              <div className="flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+                <span>
+                  Showing {(page - 1) * MARKETS_PER_PAGE + 1}-
+                  {Math.min(page * MARKETS_PER_PAGE, filteredMarkets.length)} of{" "}
+                  {filteredMarkets.length}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={page === 1}
+                    onClick={() => setPage((currentPage) => currentPage - 1)}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={page === pageCount}
+                    onClick={() => setPage((currentPage) => currentPage + 1)}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          <aside className="rounded-lg border bg-card p-4 lg:sticky lg:top-6 lg:self-start">
+            <form onSubmit={handleOrderSubmit} className="flex flex-col gap-4">
+              <div>
+                <h2 className="font-semibold">Order ticket</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Orders fill instantly using the selected market price.
+                </p>
+              </div>
+
+              <div className="rounded-md border p-3 text-sm">
+                <p className="font-medium">
+                  {selectedMarket?.name ?? "Select a market"}
+                </p>
+                <p className="mt-1 text-xs break-all text-muted-foreground">
+                  {selectedMarket?.symbol ?? "-"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={orderSide === "YES" ? "default" : "outline"}
+                  onClick={() => setOrderSide("YES")}
+                >
+                  Buy YES
+                </Button>
+                <Button
+                  type="button"
+                  variant={orderSide === "NO" ? "default" : "outline"}
+                  onClick={() => setOrderSide("NO")}
+                >
+                  Buy NO
+                </Button>
+              </div>
+
+              <label className="flex flex-col gap-1.5 text-sm font-medium">
+                Contracts
+                <input
+                  min={1}
+                  step={1}
+                  type="number"
+                  value={quantity}
+                  onChange={(event) =>
+                    setQuantity(Number(event.currentTarget.value))
+                  }
+                  className="h-9 rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/30"
+                />
+              </label>
+
+              <div className="grid gap-2 rounded-md bg-muted p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Fill price</span>
+                  <span className="font-medium">{formatPrice(orderPrice)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">Estimated cost</span>
+                  <span className="font-medium">
+                    {orderCost == null
+                      ? "-"
+                      : currencyFormatter.format(orderCost)}
+                  </span>
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={orderPrice == null || quantity <= 0}
+              >
+                Place paper order
+              </Button>
+
+              {orderMessage ? (
+                <p className="text-sm text-muted-foreground">{orderMessage}</p>
+              ) : null}
+            </form>
+          </aside>
+        </div>
       </section>
     </main>
   )
 }
 
-function MarketRow({ market }: { market: OnyxMarket }) {
+function MarketRow({
+  market,
+  isSelected,
+  onSelect,
+}: {
+  market: OnyxMarket
+  isSelected: boolean
+  onSelect: () => void
+}) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-sm last:border-b-0 md:grid-cols-[minmax(0,1fr)_120px_120px_160px]">
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`grid w-full grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-left text-sm last:border-b-0 hover:bg-muted/60 md:grid-cols-[minmax(0,1fr)_120px_120px_160px] ${
+        isSelected ? "bg-muted" : ""
+      }`}
+    >
       <div className="min-w-0">
         <p className="truncate font-medium">{market.name ?? market.symbol}</p>
         <p className="truncate text-xs text-muted-foreground">
@@ -316,7 +550,7 @@ function MarketRow({ market }: { market: OnyxMarket }) {
       <span className="hidden text-muted-foreground md:block">
         {formatDate(market.expiry_date)}
       </span>
-    </div>
+    </button>
   )
 }
 
