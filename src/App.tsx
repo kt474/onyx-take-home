@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
+  getAccountFills,
+  getAccountPositions,
   loadAccountStore,
   logIn,
   logOut,
@@ -71,6 +73,12 @@ export function App() {
     : null
   const orderPrice = orderSide === "YES" ? selectedYesPrice : selectedNoPrice
   const orderCost = orderPrice == null ? null : orderPrice * quantity
+  const accountFills = activeAccount
+    ? getAccountFills(accountStore, activeAccount.id)
+    : []
+  const accountPositions = activeAccount
+    ? getAccountPositions(accountStore, activeAccount.id)
+    : []
 
   const filteredMarkets = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -516,6 +524,102 @@ export function App() {
               ) : null}
             </form>
           </aside>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section className="rounded-lg border bg-card">
+            <div className="border-b px-4 py-3">
+              <h2 className="font-semibold">Positions</h2>
+            </div>
+
+            {accountPositions.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">
+                No positions yet.
+              </p>
+            ) : (
+              <div className="divide-y">
+                {accountPositions.map((position) => {
+                  const market = markets.find(
+                    (candidate) => candidate.symbol === position.symbol
+                  )
+                  const markPrice = market
+                    ? position.side === "YES"
+                      ? getYesPrice(market)
+                      : getNoPrice(market)
+                    : null
+                  const unrealizedPnl =
+                    markPrice == null
+                      ? null
+                      : (markPrice - position.avgPrice) * position.quantity
+
+                  return (
+                    <div
+                      key={`${position.symbol}:${position.side}`}
+                      className="grid gap-2 p-4 text-sm"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">
+                            {position.marketName}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {position.side} / {position.symbol}
+                          </p>
+                        </div>
+                        <span className="font-medium">
+                          {position.quantity} contracts
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground">
+                        <span>Avg {formatPrice(position.avgPrice)}</span>
+                        <span>Mark {formatPrice(markPrice)}</span>
+                        <span>
+                          P&L{" "}
+                          {unrealizedPnl == null
+                            ? "-"
+                            : currencyFormatter.format(unrealizedPnl)}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border bg-card">
+            <div className="border-b px-4 py-3">
+              <h2 className="font-semibold">Order history</h2>
+            </div>
+
+            {accountFills.length === 0 ? (
+              <p className="p-4 text-sm text-muted-foreground">No fills yet.</p>
+            ) : (
+              <div className="divide-y">
+                {accountFills.slice(0, 10).map((fill) => (
+                  <div key={fill.id} className="grid gap-2 p-4 text-sm">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">
+                          {fill.marketName}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {fill.side} / {fill.symbol}
+                        </p>
+                      </div>
+                      <span className="font-medium">
+                        {currencyFormatter.format(fill.cost)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {fill.quantity} contracts at {formatPrice(fill.price)} on{" "}
+                      {formatDate(fill.createdAt)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </section>
     </main>

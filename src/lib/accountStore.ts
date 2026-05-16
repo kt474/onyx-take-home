@@ -20,6 +20,15 @@ export type Fill = {
   createdAt: string
 }
 
+export type Position = {
+  symbol: string
+  marketName: string
+  side: OrderSide
+  quantity: number
+  avgPrice: number
+  cost: number
+}
+
 export type AccountStore = {
   accounts: Account[]
   fills: Fill[]
@@ -163,4 +172,40 @@ export function placePaperOrder(
 
 export function getAccountFills(store: AccountStore, accountId: string) {
   return store.fills.filter((fill) => fill.accountId === accountId)
+}
+
+export function getAccountPositions(
+  store: AccountStore,
+  accountId: string
+): Position[] {
+  const positionsByKey = new Map<string, Position>()
+
+  for (const fill of getAccountFills(store, accountId)) {
+    const key = `${fill.symbol}:${fill.side}`
+    const existingPosition = positionsByKey.get(key)
+
+    if (!existingPosition) {
+      positionsByKey.set(key, {
+        symbol: fill.symbol,
+        marketName: fill.marketName,
+        side: fill.side,
+        quantity: fill.quantity,
+        avgPrice: fill.price,
+        cost: fill.cost,
+      })
+      continue
+    }
+
+    const nextQuantity = existingPosition.quantity + fill.quantity
+    const nextCost = existingPosition.cost + fill.cost
+
+    positionsByKey.set(key, {
+      ...existingPosition,
+      quantity: nextQuantity,
+      avgPrice: nextCost / nextQuantity,
+      cost: nextCost,
+    })
+  }
+
+  return Array.from(positionsByKey.values())
 }
