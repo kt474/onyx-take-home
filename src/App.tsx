@@ -39,7 +39,14 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
   currency: "USD",
 })
 
+const timeFormatter = new Intl.DateTimeFormat("en-US", {
+  hour: "numeric",
+  minute: "2-digit",
+})
+
 const MARKETS_PER_PAGE = 20
+
+type MarketSort = "default" | "yes-desc" | "yes-asc" | "expires"
 
 export function App() {
   const [accountStore, setAccountStore] = useState<AccountStore>(() =>
@@ -51,6 +58,7 @@ export function App() {
   const [sports, setSports] = useState<OnyxSport[]>([])
   const [selectedSport, setSelectedSport] = useState("ALL")
   const [search, setSearch] = useState("")
+  const [sortBy, setSortBy] = useState<MarketSort>("default")
   const [page, setPage] = useState(1)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [pricesBySymbol, setPricesBySymbol] = useState<
@@ -59,6 +67,7 @@ export function App() {
   const [orderSide, setOrderSide] = useState<OrderSide>("YES")
   const [quantity, setQuantity] = useState(10)
   const [orderMessage, setOrderMessage] = useState("")
+  const [lastPriceUpdate, setLastPriceUpdate] = useState<Date | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState("")
 
@@ -111,17 +120,45 @@ export function App() {
       return text.includes(query)
     })
   }, [markets, search])
+  const sortedMarkets = useMemo(() => {
+    const nextMarkets = [...filteredMarkets]
+
+    if (sortBy === "yes-desc") {
+      return nextMarkets.sort(
+        (leftMarket, rightMarket) =>
+          priceSortValue(rightMarket, pricesBySymbol) -
+          priceSortValue(leftMarket, pricesBySymbol)
+      )
+    }
+
+    if (sortBy === "yes-asc") {
+      return nextMarkets.sort(
+        (leftMarket, rightMarket) =>
+          priceSortValue(leftMarket, pricesBySymbol) -
+          priceSortValue(rightMarket, pricesBySymbol)
+      )
+    }
+
+    if (sortBy === "expires") {
+      return nextMarkets.sort(
+        (leftMarket, rightMarket) =>
+          expirySortValue(leftMarket) - expirySortValue(rightMarket)
+      )
+    }
+
+    return nextMarkets
+  }, [filteredMarkets, pricesBySymbol, sortBy])
   const pageCount = Math.max(
     1,
-    Math.ceil(filteredMarkets.length / MARKETS_PER_PAGE)
+    Math.ceil(sortedMarkets.length / MARKETS_PER_PAGE)
   )
   const visibleMarkets = useMemo(
     () =>
-      filteredMarkets.slice(
+      sortedMarkets.slice(
         (page - 1) * MARKETS_PER_PAGE,
         page * MARKETS_PER_PAGE
       ),
-    [filteredMarkets, page]
+    [sortedMarkets, page]
   )
   const livePriceSymbols = useMemo(() => {
     return Array.from(
@@ -181,7 +218,7 @@ export function App() {
 
   useEffect(() => {
     setPage(1)
-  }, [search, selectedSport])
+  }, [search, selectedSport, sortBy])
 
   useEffect(() => {
     setPage((currentPage) => Math.min(currentPage, pageCount))
@@ -219,6 +256,7 @@ export function App() {
         ...currentPrices,
         ...nextPrices,
       }))
+      setLastPriceUpdate(new Date())
     }
 
     void refreshPrices()
@@ -410,6 +448,17 @@ export function App() {
             ))}
           </select>
 
+          <select
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value as MarketSort)}
+            className="h-9 rounded-md border bg-background px-3 text-sm"
+          >
+            <option value="default">Default sort</option>
+            <option value="yes-desc">YES price high to low</option>
+            <option value="yes-asc">YES price low to high</option>
+            <option value="expires">Expiring soon</option>
+          </select>
+
           <Button
             type="button"
             variant="outline"
@@ -426,69 +475,76 @@ export function App() {
         ) : null}
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <section className="overflow-hidden rounded-lg border bg-card">
-            <div className="grid grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-xs font-medium text-muted-foreground uppercase md:grid-cols-[minmax(0,1fr)_120px_120px_160px]">
-              <span>Market</span>
-              <span>Status</span>
-              <span>Yes price</span>
-              <span className="hidden md:block">Expires</span>
-            </div>
+          <div className="flex min-w-0 flex-col gap-2">
+            <p className="text-xs text-muted-foreground">
+              Prices updated{" "}
+              {lastPriceUpdate ? timeFormatter.format(lastPriceUpdate) : "-"}
+            </p>
 
-            {isLoading ? (
-              <div className="p-6 text-sm text-muted-foreground">
-                Loading markets...
+            <section className="overflow-hidden rounded-lg border bg-card">
+              <div className="grid grid-cols-[minmax(0,1fr)_120px_120px] gap-3 border-b px-4 py-3 text-xs font-medium text-muted-foreground uppercase md:grid-cols-[minmax(0,1fr)_120px_120px_160px]">
+                <span>Market</span>
+                <span>Status</span>
+                <span>Yes price</span>
+                <span className="hidden md:block">Expires</span>
               </div>
-            ) : null}
 
-            {!isLoading && filteredMarkets.length === 0 ? (
-              <div className="p-6 text-sm text-muted-foreground">
-                No markets found.
-              </div>
-            ) : null}
-
-            {!isLoading
-              ? visibleMarkets.map((market) => (
-                  <MarketRow
-                    key={market.symbol}
-                    market={market}
-                    price={pricesBySymbol[market.symbol]}
-                    isSelected={selectedMarket?.symbol === market.symbol}
-                    onSelect={() => {
-                      setSelectedSymbol(market.symbol)
-                      setOrderMessage("")
-                    }}
-                  />
-                ))
-              : null}
-
-            {!isLoading && filteredMarkets.length > 0 ? (
-              <div className="flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
-                <span>
-                  Showing {(page - 1) * MARKETS_PER_PAGE + 1}-
-                  {Math.min(page * MARKETS_PER_PAGE, filteredMarkets.length)} of{" "}
-                  {filteredMarkets.length}
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={page === 1}
-                    onClick={() => setPage((currentPage) => currentPage - 1)}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={page === pageCount}
-                    onClick={() => setPage((currentPage) => currentPage + 1)}
-                  >
-                    Next
-                  </Button>
+              {isLoading ? (
+                <div className="p-6 text-sm text-muted-foreground">
+                  Loading markets...
                 </div>
-              </div>
-            ) : null}
-          </section>
+              ) : null}
+
+              {!isLoading && sortedMarkets.length === 0 ? (
+                <div className="p-6 text-sm text-muted-foreground">
+                  No markets found.
+                </div>
+              ) : null}
+
+              {!isLoading
+                ? visibleMarkets.map((market) => (
+                    <MarketRow
+                      key={market.symbol}
+                      market={market}
+                      price={pricesBySymbol[market.symbol]}
+                      isSelected={selectedMarket?.symbol === market.symbol}
+                      onSelect={() => {
+                        setSelectedSymbol(market.symbol)
+                        setOrderMessage("")
+                      }}
+                    />
+                  ))
+                : null}
+
+              {!isLoading && sortedMarkets.length > 0 ? (
+                <div className="flex flex-col gap-3 border-t px-4 py-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+                  <span>
+                    Showing {(page - 1) * MARKETS_PER_PAGE + 1}-
+                    {Math.min(page * MARKETS_PER_PAGE, sortedMarkets.length)} of{" "}
+                    {sortedMarkets.length}
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={page === 1}
+                      onClick={() => setPage((currentPage) => currentPage - 1)}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={page === pageCount}
+                      onClick={() => setPage((currentPage) => currentPage + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          </div>
 
           <aside className="rounded-lg border bg-card p-4 lg:sticky lg:top-6 lg:self-start">
             <form onSubmit={handleOrderSubmit} className="flex flex-col gap-4">
@@ -599,20 +655,20 @@ export function App() {
                       key={`${position.symbol}:${position.side}`}
                       className="grid gap-2 p-4 text-sm"
                     >
-                      <div className="flex items-start justify-between gap-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                         <div className="min-w-0">
-                          <p className="truncate font-medium">
+                          <p className="font-medium break-words">
                             {position.marketName}
                           </p>
-                          <p className="truncate text-xs text-muted-foreground">
+                          <p className="text-xs break-all text-muted-foreground">
                             {position.side} / {position.symbol}
                           </p>
                         </div>
-                        <span className="font-medium">
+                        <span className="shrink-0 font-medium">
                           {position.quantity} contracts
                         </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-3 text-xs text-muted-foreground">
+                      <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-3">
                         <span>Avg {formatPrice(position.avgPrice)}</span>
                         <span>Mark {formatPrice(markPrice)}</span>
                         <span>
@@ -640,20 +696,20 @@ export function App() {
               <div className="divide-y">
                 {accountFills.slice(0, 10).map((fill) => (
                   <div key={fill.id} className="grid gap-2 p-4 text-sm">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                       <div className="min-w-0">
-                        <p className="truncate font-medium">
+                        <p className="font-medium break-words">
                           {fill.marketName}
                         </p>
-                        <p className="truncate text-xs text-muted-foreground">
+                        <p className="text-xs break-all text-muted-foreground">
                           {fill.side} / {fill.symbol}
                         </p>
                       </div>
-                      <span className="font-medium">
+                      <span className="shrink-0 font-medium">
                         {currencyFormatter.format(fill.cost)}
                       </span>
                     </div>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs break-words text-muted-foreground">
                       {fill.quantity} contracts at {formatPrice(fill.price)} on{" "}
                       {formatDate(fill.createdAt)}
                     </p>
@@ -716,6 +772,19 @@ function formatDate(value: string | null) {
   }
 
   return dateFormatter.format(new Date(value))
+}
+
+function priceSortValue(
+  market: OnyxMarket,
+  pricesBySymbol: Record<string, OnyxPrice>
+) {
+  return getYesPrice(market, pricesBySymbol[market.symbol]) ?? -1
+}
+
+function expirySortValue(market: OnyxMarket) {
+  return market.expiry_date
+    ? new Date(market.expiry_date).getTime()
+    : Number.MAX_SAFE_INTEGER
 }
 
 export default App
