@@ -53,7 +53,9 @@ export function App() {
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
-  const [selectedPrice, setSelectedPrice] = useState<OnyxPrice | null>(null)
+  const [pricesBySymbol, setPricesBySymbol] = useState<
+    Record<string, OnyxPrice>
+  >({})
   const [orderSide, setOrderSide] = useState<OrderSide>("YES")
   const [quantity, setQuantity] = useState(10)
   const [orderMessage, setOrderMessage] = useState("")
@@ -65,20 +67,27 @@ export function App() {
   )
   const selectedMarket =
     markets.find((market) => market.symbol === selectedSymbol) ?? markets[0]
+  const selectedPrice = selectedMarket
+    ? pricesBySymbol[selectedMarket.symbol]
+    : undefined
   const selectedYesPrice = selectedMarket
-    ? getYesPrice(selectedMarket, selectedPrice ?? undefined)
+    ? getYesPrice(selectedMarket, selectedPrice)
     : null
   const selectedNoPrice = selectedMarket
-    ? getNoPrice(selectedMarket, selectedPrice ?? undefined)
+    ? getNoPrice(selectedMarket, selectedPrice)
     : null
   const orderPrice = orderSide === "YES" ? selectedYesPrice : selectedNoPrice
   const orderCost = orderPrice == null ? null : orderPrice * quantity
-  const accountFills = activeAccount
-    ? getAccountFills(accountStore, activeAccount.id)
-    : []
-  const accountPositions = activeAccount
-    ? getAccountPositions(accountStore, activeAccount.id)
-    : []
+  const accountFills = useMemo(
+    () =>
+      activeAccount ? getAccountFills(accountStore, activeAccount.id) : [],
+    [accountStore, activeAccount]
+  )
+  const accountPositions = useMemo(
+    () =>
+      activeAccount ? getAccountPositions(accountStore, activeAccount.id) : [],
+    [accountStore, activeAccount]
+  )
 
   const filteredMarkets = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -106,10 +115,25 @@ export function App() {
     1,
     Math.ceil(filteredMarkets.length / MARKETS_PER_PAGE)
   )
-  const visibleMarkets = filteredMarkets.slice(
-    (page - 1) * MARKETS_PER_PAGE,
-    page * MARKETS_PER_PAGE
+  const visibleMarkets = useMemo(
+    () =>
+      filteredMarkets.slice(
+        (page - 1) * MARKETS_PER_PAGE,
+        page * MARKETS_PER_PAGE
+      ),
+    [filteredMarkets, page]
   )
+  const livePriceSymbols = useMemo(() => {
+    return Array.from(
+      new Set(
+        [
+          ...visibleMarkets.map((market) => market.symbol),
+          selectedMarket?.symbol,
+          ...accountPositions.map((position) => position.symbol),
+        ].filter(Boolean)
+      )
+    )
+  }, [accountPositions, selectedMarket?.symbol, visibleMarkets])
 
   const loadMarketData = useCallback(async () => {
     setIsLoading(true)
@@ -164,30 +188,47 @@ export function App() {
   }, [pageCount])
 
   useEffect(() => {
-    setSelectedPrice(null)
-
-    if (!selectedMarket) {
+    if (livePriceSymbols.length === 0) {
       return
     }
 
     let isCurrent = true
 
-    getMarketPrice(selectedMarket.symbol)
-      .then((price) => {
-        if (isCurrent) {
-          setSelectedPrice(price)
+    async function refreshPrices() {
+      const results = await Promise.allSettled(
+        livePriceSymbols.map(async (symbol) => {
+          const price = await getMarketPrice(symbol)
+          return [symbol, price] as const
+        })
+      )
+
+      if (!isCurrent) {
+        return
+      }
+
+      const nextPrices: Record<string, OnyxPrice> = {}
+
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          const [symbol, price] = result.value
+          nextPrices[symbol] = price
         }
-      })
-      .catch(() => {
-        if (isCurrent) {
-          setSelectedPrice(null)
-        }
-      })
+      }
+
+      setPricesBySymbol((currentPrices) => ({
+        ...currentPrices,
+        ...nextPrices,
+      }))
+    }
+
+    void refreshPrices()
+    const intervalId = window.setInterval(() => void refreshPrices(), 10_000)
 
     return () => {
       isCurrent = false
+      window.clearInterval(intervalId)
     }
-  }, [selectedMarket])
+  }, [livePriceSymbols])
 
   function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -410,6 +451,7 @@ export function App() {
                   <MarketRow
                     key={market.symbol}
                     market={market}
+                    price={pricesBySymbol[market.symbol]}
                     isSelected={selectedMarket?.symbol === market.symbol}
                     onSelect={() => {
                       setSelectedSymbol(market.symbol)
@@ -544,8 +586,8 @@ export function App() {
                   )
                   const markPrice = market
                     ? position.side === "YES"
-                      ? getYesPrice(market)
-                      : getNoPrice(market)
+                      ? getYesPrice(market, pricesBySymbol[position.symbol])
+                      : getNoPrice(market, pricesBySymbol[position.symbol])
                     : null
                   const unrealizedPnl =
                     markPrice == null
@@ -628,10 +670,12 @@ export function App() {
 
 function MarketRow({
   market,
+  price,
   isSelected,
   onSelect,
 }: {
   market: OnyxMarket
+  price?: OnyxPrice
   isSelected: boolean
   onSelect: () => void
 }) {
@@ -650,7 +694,7 @@ function MarketRow({
         </p>
       </div>
       <span className="text-muted-foreground capitalize">{market.status}</span>
-      <span>{formatPrice(market.yes_price)}</span>
+      <span>{formatPrice(getYesPrice(market, price))}</span>
       <span className="hidden text-muted-foreground md:block">
         {formatDate(market.expiry_date)}
       </span>
