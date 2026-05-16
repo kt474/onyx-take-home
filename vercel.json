@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/onyx/:path*",
+      "destination": "https://predictions.dev-onyxodds.com/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
